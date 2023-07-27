@@ -2,8 +2,24 @@ import argparse
 import errno
 import os
 import sys
+import time
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
+color_ = '#E0D9D1'
+imgHeight = 48
+imgWidth = 48
+num_ = 1680200  # 8k * 200 = 1600k = 160w
+# charDict = '8k.txt' # input file
+charDict = 'vocab_AND_zipin_AND_gbk_PLUS_gb2312_column.txt' # 16802
+thread_count = 64  # speed
+skew_angle = 2
+
+# two method: 
+# 1. (5,5,5,5) 无裁剪 line 297
+# 2. (10,10,10,10) 裁剪(字更小); 
+# 为了命名一致，需要修改data_generator line 259 TODO str(index) += 80w-1
+
 
 import random as rnd
 import string
@@ -46,7 +62,7 @@ def parse_arguments():
         type=str,
         nargs="?",
         help="When set, this argument uses a specified text file as source for the text",
-        default="",
+        default=charDict,
     )
     parser.add_argument(
         "-l",
@@ -54,7 +70,7 @@ def parse_arguments():
         type=str,
         nargs="?",
         help="The language to use, should be fr (French), en (English), es (Spanish), de (German), ar (Arabic), cn (Chinese), ja (Japanese) or hi (Hindi)",
-        default="en",
+        default="cn",
     )
     parser.add_argument(
         "-c",
@@ -62,7 +78,7 @@ def parse_arguments():
         type=int,
         nargs="?",
         help="The number of images to be created.",
-        required=True,
+        default=num_,
     )
     parser.add_argument(
         "-rs",
@@ -76,7 +92,7 @@ def parse_arguments():
         "--include_letters",
         action="store_true",
         help="Define if random sequences should contain letters. Only works with -rs",
-        default=False,
+        default=False,  # 不使用随机序列
     )
     parser.add_argument(
         "-num",
@@ -105,7 +121,7 @@ def parse_arguments():
         "--random",
         action="store_true",
         help="Define if the produced string will have variable word count (with --length being the maximum)",
-        default=False,
+        default=False,  # TODO 以-w设置的单词数为上限，随机生成不同单词数的图片
     )
     parser.add_argument(
         "-f",
@@ -113,7 +129,7 @@ def parse_arguments():
         type=int,
         nargs="?",
         help="Define the height of the produced images if horizontal, else the width",
-        default=32,
+        default=imgHeight,
     )
     parser.add_argument(
         "-t",
@@ -121,7 +137,7 @@ def parse_arguments():
         type=int,
         nargs="?",
         help="Define the number of thread to use for image generation",
-        default=1,
+        default=thread_count,
     )
     parser.add_argument(
         "-e",
@@ -129,7 +145,7 @@ def parse_arguments():
         type=str,
         nargs="?",
         help="Define the extension to save the image with",
-        default="jpg",
+        default="png",
     )
     parser.add_argument(
         "-k",
@@ -137,14 +153,14 @@ def parse_arguments():
         type=int,
         nargs="?",
         help="Define skewing angle of the generated text. In positive degrees",
-        default=0,
+        default=skew_angle, 
     )
     parser.add_argument(
         "-rk",
         "--random_skew",
         action="store_true",
         help="When set, the skew angle will be randomized between the value set with -k and it's opposite",
-        default=False,
+        default=True,
     )
     parser.add_argument(
         "-wk",
@@ -174,20 +190,21 @@ def parse_arguments():
         type=int,
         nargs="?",
         help="Define what kind of background to use. 0: Gaussian Noise, 1: Plain white, 2: Quasicrystal, 3: Image",
-        default=0,
+        default=3,  # TODO 定义背景
     )
     parser.add_argument(
         "-hw",
         "--handwritten",
         action="store_true",
         help='Define if the data will be "handwritten" by an RNN',
+        default=False,
     )
     parser.add_argument(
         "-na",
         "--name_format",
         type=int,
         help="Define how the produced files will be named. 0: [TEXT]_[ID].[EXT], 1: [ID]_[TEXT].[EXT] 2: [ID].[EXT] + one file labels.txt containing id-to-label mappings",
-        default=0,
+        default=2,
     )
     parser.add_argument(
         "-om",
@@ -225,7 +242,7 @@ def parse_arguments():
         type=int,
         nargs="?",
         help="Define the width of the resulting image. If not set it will be the width of the text + 10. If the width of the generated text is bigger that number will be used",
-        default=-1,
+        default=imgWidth,
     )
     parser.add_argument(
         "-al",
@@ -249,7 +266,7 @@ def parse_arguments():
         type=str,
         nargs="?",
         help="Define the text's color, should be either a single hex color or a range in the ?,? format.",
-        default="#282828",
+        default=color_,
     )
     parser.add_argument(
         "-sw",
@@ -273,17 +290,18 @@ def parse_arguments():
         type=margins,
         nargs="?",
         help="Define the margins around the text when rendered. In pixels",
-        default=(5, 5, 5, 5),
+        default=(10,10,10,10),
     )
     parser.add_argument(
         "-fi",
         "--fit",
         action="store_true",
         help="Apply a tight crop around the rendered text",
-        default=False,
+        default=True, # TODO 随机裁剪之后有的字可能就显得变大了
     )
     parser.add_argument(
-        "-ft", "--font", type=str, nargs="?", help="Define font to be used"
+        "-ft", "--font", type=str, nargs="?", help="Define font to be used",
+        default=''
     )
     parser.add_argument(
         "-fd",
@@ -331,7 +349,7 @@ def parse_arguments():
         type=str,
         nargs="?",
         help="Define the color of the contour of the strokes, if stroke_width is bigger than 0",
-        default="#282828",
+        default=color_,
     )
     parser.add_argument(
         "-im",
@@ -479,10 +497,12 @@ def main():
     if args.name_format == 2:
         # Create file with filename-to-label connections
         with open(
-            os.path.join(args.output_dir, "labels.txt"), "w", encoding="utf8"
-        ) as f:
+            os.path.join(args.output_dir, "labels.txt"), "a", encoding="utf8"
+        ) as f:  # 改成了追加写 TODO w -> a
             for i in range(string_count):
+                i += 1680200  # TODO 1/3
                 file_name = str(i) + "." + args.extension
+                i -= 1680200  # TODO 2/3
                 label = strings[i]
                 if args.space_width == 0:
                     label = label.replace(" ", "")
@@ -490,4 +510,9 @@ def main():
 
 
 if __name__ == "__main__":
+    tic = time.time()
+    print(f'start time: {tic}')
     main()
+    toc = time.time()
+    print(f'end time: {toc}')
+    print(f'duration: {toc - tic}')
